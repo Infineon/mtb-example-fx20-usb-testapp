@@ -58,7 +58,6 @@ DW_Type                        *pCpuDw1Base;
 uint32_t                        hfclkFreq = BCLK__BUS_CLK__HZ;
 uint32_t                        dmaClkSel = 0;
 bool                            vBusDetDisable = false;
-uint8_t                         ebHalfDepth_Gen2 = FX3G2_DFLT_GEN2_EB_DEPTH;
 static uint32_t                 g_UsbEvtLogBuf[512u];
 volatile bool                   glDeepSleepEnabled = false;
 
@@ -94,6 +93,41 @@ volatile uint32_t LogDataBuffer[LOGBUF_RAM_SZ / 4U];
 #define VBUS_DETECT_GPIO_INTR           (ioss_interrupts_gpio_dpslp_4_IRQn)
 #define VBUS_DETECT_STATE               (0u)
 
+/*
+ * Notes on DMA Buffer RAM Usage:
+ * 1. The initial part of the buffer RAM is reserved for the descriptors used by the DMA manager.
+ *    The space used for this is reserved using the gHbDmaDescriptorSpace array which is placed
+ *    in a section named ".hbDmaDescriptor". This array should have a minimum size of 8192 (8 KB)
+ *    and has a default size allocation of 16384 bytes (16 KB). No other data should be placed
+ *    in this section.
+ *
+ * 2. The descriptor region is followed by RW data structures which are placed in the ".descSection".
+ *    Only data members placed in this section will be initialized during the firmware load
+ *    process.
+ *
+ * 3. The ".descSection" is followed by the ".hbBufSection" which will hold data structures
+ *    which do not need to be explicitly initialized (equivalent of ".bss" section).
+ *
+ * 4. This is followed by the ".hbDmaBufferHeap" section which will be used to allocate all
+ *    the DMA buffers from. The gHbDmaBufferHeap array represents the memory region which will
+ *    be given to the DMA buffer manager to allocate buffers from and can be sized based on the
+ *    available memory. No other data or variables should be placed in this section.
+ *
+ * Any pre-initialized data which is to be placed in the High BandWidth Buffer RAM should be
+ * added to the ".descSection". Any non-initialized data which is to be placed in the High
+ * BandWidth Buffer RAM should be added to the ".hbBufSection".
+ */
+
+/* Region of 16 KB reserved for High BandWidth DMA descriptors. */
+static __attribute__ ((section(".hbDmaDescriptor"), used)) uint32_t gHbDmaDescriptorSpace[16384 / 4];
+
+/* Region of 960 KB reserved for DMA buffer heap. */
+/*
+ * Note: Since this application requires a large amount of buffer RAM, it is only supported on parts
+ * that support 1 MB of DMA buffer RAM.
+ */
+static __attribute__ ((section(".hbDmaBufferHeap"), used)) uint32_t gHbDmaBufferHeap[960 * 1024 / 4];
+
 bool InitHbDma (void)
 {
     cy_en_hbdma_status_t      drvstat;
@@ -110,15 +144,21 @@ bool InitHbDma (void)
     HBW_DrvCtxt.USBIN_SCK_GBL->ADAPTER_CONF |= USB32DEV_ADAPTER_DMA_SCK_GBL_ADAPTER_CONF_DESCR_PF_EN_N_Msk;
     HBW_DrvCtxt.USBEG_SCK_GBL->ADAPTER_CONF |= USB32DEV_ADAPTER_DMA_SCK_GBL_ADAPTER_CONF_DESCR_PF_EN_N_Msk;
 
-    /* Setup a HBW DMA descriptor list. */
-    mgrstat = Cy_HBDma_DscrList_Create(&HBW_DscrList, 512U);
+    /* Verify that gHbDmaDescriptorSpace is located at the base of the DMA buffer SRAM. */
+    if ((uint32_t)gHbDmaDescriptorSpace != CY_HBW_SRAM_BASE_ADDR) {
+        DBG_APP_ERR("High BandWidth DMA descriptors not placed at the correct address\r\n");
+        return false;
+    }
+
+    /* Setup a HBW DMA descriptor list using the space reserved in gHbDmaDescriptorSpace. */
+    mgrstat = Cy_HBDma_DscrList_Create(&HBW_DscrList, sizeof(gHbDmaDescriptorSpace) / 16);
     if (mgrstat != CY_HBDMA_MGR_SUCCESS)
     {
         return false;
     }
 
-    /* Initialize the DMA buffer manager. We will use 962 KB of space from 0x1C00F800 onwards. */
-    mgrstat = Cy_HBDma_BufMgr_Create(&HBW_BufMgr, (uint32_t *)0x1C00F800UL, 0xF0800UL);
+    /* Initialize the DMA buffer manager to use the gHbDmaBufferHeap region. */
+    mgrstat = Cy_HBDma_BufMgr_Create(&HBW_BufMgr, (uint32_t *)gHbDmaBufferHeap, sizeof(gHbDmaBufferHeap));
     if (mgrstat != CY_HBDMA_MGR_SUCCESS)
     {
         return false;
@@ -1866,6 +1906,12 @@ static void GetUsbDeviceConfiguration(cy_stc_usb_app_ctxt_t *pAppCtxt)
             glI2cSlaveRdBuffer[5]  = epIdx;
 
             switch (epIdx) {
+#if (!USB3_LPM_ENABLE)
+                /*
+                 * When building with LPM enabled for compliance testing, enable only bulk endpoints.
+                 * If INTR/ISO endpoints are required, they need to be added in different alternate
+                 * settings which is not supported by this application.
+                 */
                 case 2:
                     /* Configure EP 2-OUT and 2-IN as Interrupt endpoints with a burst setting of 1 packet. */
                     glI2cSlaveRdBuffer[6]  = (uint8_t)CY_USB_ENDP_TYPE_INTR;
@@ -1887,6 +1933,7 @@ static void GetUsbDeviceConfiguration(cy_stc_usb_app_ctxt_t *pAppCtxt)
                     glI2cSlaveRdBuffer[18] = 0x08;              /* Burst of 8 packets */
                     glI2cSlaveRdBuffer[19] = 0x00;              /* One burst per interval. */
                     break;
+#endif /* (!USB3_LPM_ENABLE) */
 
                 default:
                     glI2cSlaveRdBuffer[6]  = (uint8_t)CY_USB_ENDP_TYPE_BULK;
@@ -2685,24 +2732,6 @@ const cy_en_hbdma_clk_freq_t DdfToDmaClkSel[8] = {
 };
 
 /*****************************************************************************
- * Function Name: Cy_Set_BasePri
- *****************************************************************************
- * Summary
- *  This function sets the BASEPRI value for the active Cortex-M CPU core.
- *
- * Parameters:
- *  val: BASEPRI value to be set.
- ****************************************************************************/
-void Cy_Set_BasePri(uint32_t val)
-{
-#if (CY_CPU_CORTEX_M4)
-    __asm__ __volatile__(
-            "MSR BASEPRI, r0\n\t"
-            );
-#endif /* (CY_CPU_CORTEX_M4) */
-}
-
-/*****************************************************************************
 * Function Name: main(void)
 ******************************************************************************
 * Summary:
@@ -2742,10 +2771,6 @@ int main(void)
         } else {
             glDeepSleepEnabled = false;
         }
-
-        if (pTestCfg->ebDepth != 0) {
-            ebHalfDepth_Gen2 = pTestCfg->ebDepth;
-        }
     } else {
         /* AXI clock frequency set to 240 MHz derived from USBHS PLL. */
         dmaClkSel = 0;
@@ -2768,8 +2793,13 @@ int main(void)
     Cy_WDT_Unlock();
     Cy_WDT_Disable();
 
-    /* Set BASEPRI value to 0 to ensure all exceptions can run and then enable interrupts. */
-    Cy_Set_BasePri(0);
+#if CY_CPU_CORTEX_M4
+    /*
+     * If logging is done through the USBFS port, ISR execution is required in this application.
+     * Set BASEPRI value to 0 to ensure all exceptions can run and then enable interrupts.
+     */
+    __set_BASEPRI(0);
+#endif /* CY_CPU_CORTEX_M4 */
     __enable_irq ();
 
     memset((uint8_t *)&appCtxt, 0, sizeof(appCtxt));
@@ -2879,30 +2909,6 @@ int main(void)
     return 0;
 }
 
-/*******************************************************************************
- * Function name: Cy_Fx3G2_OnResetInit
- ****************************************************************************//**
- * This function performs initialization that is required to enable scatter
- * loading of data into the High BandWidth RAM during device boot-up. The FX10/FX20
- * device comes up with the High BandWidth RAM disabled and hence any attempt
- * to read/write the RAM will cause the processor to hang. The RAM needs to
- * be enabled with default clock settings to allow scatter loading to work.
- * This function needs to be called from Cy_OnResetUser.
- *******************************************************************************/
-void
-Cy_Fx3G2_OnResetInit (
-        void)
-{
-    /* Enable clk_hf4 with IMO as input. */
-    SRSS->CLK_ROOT_SELECT[4] = SRSS_CLK_ROOT_SELECT_ENABLE_Msk;
-
-    /* Enable LVDS2USB32SS IP and select clk_hf[4] as clock input. */
-    MAIN_REG->CTRL = (
-            MAIN_REG_CTRL_IP_ENABLED_Msk |
-            (1UL << MAIN_REG_CTRL_NUM_FAST_AHB_STALL_CYCLES_Pos) |
-            (1UL << MAIN_REG_CTRL_NUM_SLOW_AHB_STALL_CYCLES_Pos) |
-            (3UL << MAIN_REG_CTRL_DMA_SRC_SEL_Pos));
-}
 
 /*****************************************************************************
  * Function Name: Cy_OnResetUser(void)
@@ -2920,7 +2926,7 @@ Cy_Fx3G2_OnResetInit (
  *****************************************************************************/
 void Cy_OnResetUser (void)
 {
-    Cy_Fx3G2_OnResetInit();
+    Cy_UsbFx_OnResetInit();
 }
 
 /* [] END OF FILE */

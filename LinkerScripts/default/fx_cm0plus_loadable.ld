@@ -1,5 +1,5 @@
 /***************************************************************************//**
-* \file fx_cm0plus.ld
+* \file fx_cm0plus_loadable.ld
 * \version 1.00
 *
 * Linker file for the GNU C compiler.
@@ -58,15 +58,20 @@ MEMORY
 {
     /* The ram and flash regions control RAM and flash memory allocation for the CM0+ core.
      * You can change the memory allocation by editing the 'ram' and 'flash' regions.
-     * Note that 2 KB of RAM (at the end of the SRAM) are reserved for system use.
+     *
+     * The first 32 KB (0x8000) bytes of FLASH are used by the bootloader.
+     *
+     * Note that 2176 bytes of RAM (at the end of the SRAM) are reserved for system use.
      * Using this memory region for other purposes will lead to unexpected behavior.
-     * Your changes must be aligned with the corresponding memory regions for the CM4 core in 'xx_cm4_dual.ld',
-     * where 'xx' is the device group; for example, 'cy8c6xx7_cm4_dual.ld'.
+     *
+     * We have 1 MB of High BandWidth Buffer RAM starting from address 0x1C000000.
+     * The DMA descriptors (.hbDmaDescriptor section) must be placed first in this region.
+     * The initialized data arrays (.descSection section) are placed after this.
+     * The un-initialized data buffers (.hbBufSection) and DMA buffer heap (.hbDmaBufferHeap) are placed after this.
      */
     ram               (rwx)   : ORIGIN = 0x08000000, LENGTH = 0x1E000
-    flash             (rx)    : ORIGIN = 0x10000000, LENGTH = 0x80000
-    dmabuf            (rwx)   : ORIGIN = 0x1C004000, LENGTH = 0x0C000
-
+    flash             (rx)    : ORIGIN = 0x10008000, LENGTH = 0x78000
+    hbdmaram          (rwx)   : ORIGIN = 0x1C000000, LENGTH = 0x100000
 
     /* This is an unprotected public RAM region, with the placed .cy_sharedmem.
      * This region is used to place objects that require full access from both cores.
@@ -168,14 +173,14 @@ SECTIONS
     } > flash
 
 
-    .ARM.extab :
+    .ARM.extab (READONLY) :
     {
         *(.ARM.extab* .gnu.linkonce.armextab.*)
     } > flash
 
     __exidx_start = .;
 
-    .ARM.exidx :
+    .ARM.exidx (READONLY) :
     {
         *(.ARM.exidx* .gnu.linkonce.armexidx.*)
     } > flash
@@ -185,7 +190,7 @@ SECTIONS
     /* To copy multiple ROM to RAM sections,
      * uncomment .copy.table section and,
      * define __STARTUP_COPY_MULTIPLE in startup_fx3g2_cm0plus.S */
-    .copy.table :
+    .copy.table (READONLY) :
     {
         . = ALIGN(4);
         __copy_table_start__ = .;
@@ -212,7 +217,7 @@ SECTIONS
     /* To clear multiple BSS sections,
      * uncomment .zero.table section and,
      * define __STARTUP_CLEAR_BSS_MULTIPLE in startup_fx3g2_cm0plus.S */
-    .zero.table :
+    .zero.table (READONLY) :
     {
         . = ALIGN(4);
         __zero_table_start__ = .;
@@ -271,8 +276,14 @@ SECTIONS
 
     } > ram AT>flash
 
+    /* High BandWidth DMA descriptors to be placed at the beginning of hbdmaram section. */
+    .hbRamDesc (NOLOAD) :
+    {
+        . = ALIGN(4);
+        KEEP(*(.hbDmaDescriptor*))
+    } > hbdmaram
 
-    /* Contents from the descSection need to be placed in the dmabuf region. */
+    /* Contents from the descSection need to be placed next in the hbdmaram region. */
     .hbRamData :
     {
         . = ALIGN(4);
@@ -280,20 +291,20 @@ SECTIONS
         KEEP(*(.descSection*))
         . = ALIGN(4);
         __hbram_end__ = .;
-    } > dmabuf AT>flash
+    } > hbdmaram AT>flash
 
-
-    /* Un-initialized memory buffers to be placed in High BandWidth RAM. */
+    /* Un-initialized memory buffers and the DMA buffer heap region need to be placed after this in hbdmaram. */
     .hbRamBuf (NOLOAD) :
     {
         . = ALIGN(4);
         KEEP(*(.hbBufSection*))
-    } > dmabuf
 
+        . = ALIGN(64);
+        KEEP(*(.hbDmaBufferHeap*))
+    } > hbdmaram
 
     /* Roll back to end of data segment in System RAM. */
     . = __data_end__;
-
 
     /* Place variables in the section that should not be initialized during the
     *  device startup.
@@ -302,12 +313,6 @@ SECTIONS
     {
       KEEP(*(.noinit))
     } > ram
-
-    /* Contents from the descSection need to be placed in the dmabuf region. */
-    .dmabuf : ALIGN(8)
-    {
-        KEEP(*(.descSection))
-    } > dmabuf AT>flash
 
     /* The uninitialized global or static variables are placed in this section.
     *
@@ -373,7 +378,12 @@ SECTIONS
     /* Check if data + heap + stack exceeds RAM limit */
     ASSERT(__StackLimit >= __HeapLimit, "region RAM overflowed with stack")
 
-
+    /* Used for the digital signature of the secure application and the Bootloader SDK application.
+    * The size of the section depends on the required data size. */
+    .cy_app_signature ORIGIN(flash) + LENGTH(flash) - 512 :
+    {
+        KEEP(*(.cy_app_signature))
+    } > flash
 
 
     /* Supervisory Flash: User data */
@@ -438,10 +448,14 @@ SECTIONS
 
 /* The following symbols used by the cymcuelftool. */
 /* Flash */
-__cy_memory_0_start    = 0x10000000;
-__cy_memory_0_length   = 0x00080000;
+__cy_memory_0_start    = 0x10008000;
+__cy_memory_0_length   = 0x00078000;
 __cy_memory_0_row_size = 0x200;
 
+/* Symbols provided to cymcuelftool for checksum generation. */
+__cy_app_verify_start   = 0x10008000;
+__cy_app_verify_length  = 0x00077E00;
+__cy_app_signature_addr = 0x1007FE00;
 
 /* Supervisory Flash */
 __cy_memory_2_start    = 0x16000000;

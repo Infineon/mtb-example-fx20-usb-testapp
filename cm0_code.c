@@ -7,7 +7,7 @@
 *
 *******************************************************************************
 * \copyright
-* (c) (2024), Cypress Semiconductor Corporation (an Infineon company) or
+* (c) (2025), Cypress Semiconductor Corporation (an Infineon company) or
 * an affiliate of Cypress Semiconductor Corporation.
 *
 * SPDX-License-Identifier: Apache-2.0
@@ -43,6 +43,7 @@ __attribute__ ((section(".cy_app_signature"), used)) const uint8_t cyFx3g2AppSig
 * linker configuration files. The following symbols used by the cymcuelftool.
 *
 *******************************************************************************/
+#if (CY_FLASH_SIZE == 0x00080000UL)
 __asm(
 "Cy_AppVerify_MemorySymbols:\n"
         ".global __cy_app_verify_start\n"
@@ -52,6 +53,17 @@ __asm(
         ".equ __cy_app_verify_length, 0x00077E00\n"
         ".equ __cy_app_signature_addr, 0x1007FE00\n"
      );
+#else
+__asm(
+"Cy_AppVerify_MemorySymbols:\n"
+        ".global __cy_app_verify_start\n"
+        ".global __cy_app_verify_length\n"
+        ".global __cy_app_signature_addr\n"
+        ".equ __cy_app_verify_start, 0x10008000\n"
+        ".equ __cy_app_verify_length, 0x00037E00\n"
+        ".equ __cy_app_signature_addr, 0x1003FE00\n"
+     );
+#endif /* (CY_FLASH_SIZE == 0x00080000UL) */
 #endif /* defined (__ARMCC_VERSION) */
 
 #endif /* BLOAD_ENABLE */
@@ -63,51 +75,56 @@ __asm(
 __attribute__ ((section(".cm0_code"), used))
 const uint32_t Cm0Code[256] = {
     0x08002000,
-    0x100080D1,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
-    0x100080DB,
+    0x100080E5,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
+    0x100080EF,
     0x22044B03,
     0x46C0601A,
     0xBF3046C0,
     0x46C0E7F8,
     0xE000ED10,
-    0x4B08B510,
-    0x601A4A08,
-    0x680A4908,
-    0x401A4B08,
-    0x43134B08,
-    0x4B08600B,
-    0x06DB681B,
-    0xB662D5FB,
-    0xFFE4F7FF,
+    0x4B0CB510,
+    0x601A2201,
+    0x46C046C0,
+    0x46C046C0,
+    0x4A0A4B09,
+    0x490A601A,
+    0x4B0A680A,
+    0x4B0A401A,
+    0x600B4313,
+    0x681B4B09,
+    0xD5FB06DB,
+    0xF7FFB662,
+    0x46C0FFDD,
+    0xE000E180,
     0x40200200,
     0x10008400,
     0x40201200,
@@ -115,13 +132,13 @@ const uint32_t Cm0Code[256] = {
     0x05FA0003,
     0x40200004,
     0xF7FF2000,
-    0xBF30FFDF,
+    0xBF30FFD5,
     0x47704770,
     0x46C04770,
     0x10008000,
     0x08000000,
     0x00000080,
-    0x10008100,
+    0x10008114,
     0x08000000,
     0x00000000,
     0x08000000,
